@@ -1,0 +1,16 @@
+Smart Medication Reminder
+
+Interface an OLED display and a buzzer to remind patients when to take medicine, using a real-time clock module and VSDSQUADRON Mini risc v board. 
+
+Project Overview
+This system will:
+Display medicine reminder messages on an OLED screen.
+Use a buzzer to alert the patient at scheduled times.
+Store and retrieve the schedule from an RTC (Real-Time Clock) module.
+
+Components Required
+RISC-V board
+OLED Display 
+RTC Module 
+Buzzer
+Push Button 
