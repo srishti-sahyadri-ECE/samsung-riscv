@@ -1,1 +1,85 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <RTClib.h>
 
+// Define OLED display size
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// Initialize RTC module
+RTC_DS3231 rtc;
+
+// Define buzzer and button pins
+#define BUZZER_PIN PB0
+#define BUTTON_PIN PC0
+
+// Medicine reminder times (24-hour format)
+const int reminderHours[] = {8, 12, 18, 22}; // 8 AM, 12 PM, 6 PM, 10 PM
+const int reminderMinutes[] = {0, 0, 0, 0}; 
+
+bool alertActive = false;
+
+void setup() {
+    pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+    Serial.begin(115200);
+    Wire.begin();
+  
+    if (!rtc.begin()) {
+        Serial.println("Couldn't find RTC!");
+        while (1);
+    }
+    
+    if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+        Serial.println("SSD1306 OLED failed!");
+        while (1);
+    }
+  
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(0, 0);
+    display.println("Smart Med Reminder");
+    display.display();
+    delay(2000);
+}
+
+void loop() {
+    DateTime now = rtc.now();
+  
+    for (int i = 0; i < sizeof(reminderHours) / sizeof(int); i++) {
+        if (now.hour() == reminderHours[i] && now.minute() == reminderMinutes[i]) {
+            alertUser();
+        }
+    }
+  
+    delay(60000); // Check every minute
+}
+
+void alertUser() {
+    display.clearDisplay();
+    display.setCursor(0, 10);
+    display.println("Take Your Medicine!");
+    display.display();
+
+    alertActive = true;
+
+    for (int i = 0; i < 10; i++) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(500);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(500);
+        if (digitalRead(BUTTON_PIN) == LOW) {
+            break;
+        }
+    }
+
+    display.clearDisplay();
+    display.setCursor(0, 10);
+    display.println("Reminder Cleared!");
+    display.display();
+    delay(2000);
+}
