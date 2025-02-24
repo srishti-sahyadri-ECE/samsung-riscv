@@ -1,85 +1,139 @@
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <RTClib.h>
 
-// Define OLED display size
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+#include <ch32v00x.h>
+#include <debug.h>
 
-// Initialize RTC module
-RTC_DS3231 rtc;
+/* PWM Output Mode Definition */
+#define PWM_MODE1 0
+#define PWM_MODE2 1
+/* PWM Output Mode Selection */
+#define PWM_MODE PWM_MODE2
 
-// Define buzzer and button pins
-#define BUZZER_PIN PB0
-#define BUTTON_PIN PC0
+/* Threshold distance in cm for water level */
+#define WATER_LEVEL_THRESHOLD 10
 
-// Medicine reminder times (24-hour format)
-const int reminderHours[] = {8, 12, 18, 22}; // 8 AM, 12 PM, 6 PM, 10 PM
-const int reminderMinutes[] = {0, 0, 0, 0}; 
+/* Function to initialize PWM on Timer 1 for the servo motor */
+void TIM1_PWMOut_Init(uint16_t arr, uint16_t psc, uint16_t ccp)
+{
+    GPIO_InitTypeDef GPIO_InitStructure = {0};
+    TIM_OCInitTypeDef TIM_OCInitStructure = {0};
+    TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure = {0};
 
-bool alertActive = false;
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOD, ENABLE);
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP; // Alternate Function Push-Pull
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_10MHz;
+    GPIO_Init(GPIOD, &GPIO_InitStructure);
 
-void setup() {
-    pinMode(BUZZER_PIN, OUTPUT);
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_TIM1, ENABLE);
+    TIM_TimeBaseInitStructure.TIM_Period = arr;
+    TIM_TimeBaseInitStructure.TIM_Prescaler = psc;
+    TIM_TimeBaseInitStructure.TIM_ClockDivision = TIM_CKD_DIV1;
+    TIM_TimeBaseInitStructure.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM1, &TIM_TimeBaseInitStructure);
 
-    Serial.begin(115200);
-    Wire.begin();
-  
-    if (!rtc.begin()) {
-        Serial.println("Couldn't find RTC!");
-        while (1);
-    }
-    
-    if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-        Serial.println("SSD1306 OLED failed!");
-        while (1);
-    }
-  
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(WHITE);
-    display.setCursor(0, 0);
-    display.println("Smart Med Reminder");
-    display.display();
-    delay(2000);
+#if (PWM_MODE == PWM_MODE1)
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1;
+#elif (PWM_MODE == PWM_MODE2)
+    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM2;
+#endif
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable;
+    TIM_OCInitStructure.TIM_Pulse = ccp;
+    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High;
+    TIM_OC1Init(TIM1, &TIM_OCInitStructure);
+    TIM_CtrlPWMOutputs(TIM1, ENABLE);
+    TIM_OC1PreloadConfig(TIM1, TIM_OCPreload_Disable);
+    TIM_ARRPreloadConfig(TIM1, ENABLE);
+    TIM_Cmd(TIM1, ENABLE);
 }
 
-void loop() {
-    DateTime now = rtc.now();
-  
-    for (int i = 0; i < sizeof(reminderHours) / sizeof(int); i++) {
-        if (now.hour() == reminderHours[i] && now.minute() == reminderMinutes[i]) {
-            alertUser();
+/* Function to configure GPIO Pins */
+void GPIO_Config(void)
+{
+    GPIO_InitTypeDef GPIO_InitStructure = {0};
+
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOD, ENABLE);
+
+    // Pin 3: Input for Ultrasonic sensor echo
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU; // Input with Pull-Up
+    GPIO_Init(GPIOD, &GPIO_InitStructure);
+
+    // Pin 4: Output for Ultrasonic sensor trigger
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP; // Output Push-Pull
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOD, &GPIO_InitStructure);
+
+    // Pin 6: LED indicator
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_6;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP; // Output Push-Pull
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOD, &GPIO_InitStructure);
+}
+
+/* Function to trigger the ultrasonic sensor and read the echo duration */
+uint32_t Ultrasonic_Read(void)
+{
+    uint32_t echoTime = 0;
+
+    GPIO_WriteBit(GPIOD, GPIO_Pin_4, SET); // Setting Trigger Pin to send pulses
+    Delay_Us(10); // Pulse Width
+    GPIO_WriteBit(GPIOD, GPIO_Pin_4, RESET); // Resetting Trigger Pin
+
+    while (GPIO_ReadInputDataBit(GPIOD, GPIO_Pin_3) == Bit_RESET); // Wait for Echo to go high
+    while (GPIO_ReadInputDataBit(GPIOD, GPIO_Pin_3) == Bit_SET) echoTime++; // Measure the time Echo is high
+
+    return echoTime;
+}
+
+/* Function to calculate distance from echo time */
+float Calculate_Distance(uint32_t echoTime)
+{
+    // Speed of sound in air is 340 m/s or 0.034 cm/us
+    // Distance is (time / 2) * speed_of_sound
+    return (echoTime / 2.0) * 0.034;
+}
+
+/* Function to control LED blinking */
+void Blink_LED(uint8_t times, uint16_t on_time, uint16_t off_time)
+{
+    for (uint8_t i = 0; i < times; i++)
+    {
+        GPIO_WriteBit(GPIOD, GPIO_Pin_6, Bit_SET); // Turn LED on
+        Delay_Ms(on_time); // Delay for on_time
+
+        GPIO_WriteBit(GPIOD, GPIO_Pin_6, Bit_RESET); // Turn LED off
+        Delay_Ms(off_time); // Delay for off_time
+    }
+}
+
+/* Main function */
+int main(void)
+{
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
+    SystemCoreClockUpdate();
+    Delay_Init();
+    GPIO_Config();
+    USART_Printf_Init(115200); // Initialize debug USART
+
+    while (1)
+    {
+        uint32_t echoTime = Ultrasonic_Read();
+        float distance = Calculate_Distance(echoTime);
+
+        printf("Distance: %.2f cm\n", distance); // Print the distance
+
+        if (distance < WATER_LEVEL_THRESHOLD) // If water level is below the threshold
+        {
+            Blink_LED(3, 200, 100); // Blink LED three times with specified on and off times
+            TIM1_PWMOut_Init(100, 480 - 1, 95); // Set PWM to 95% duty cycle to activate the servo motor
         }
-    }
-  
-    delay(60000); // Check every minute
-}
-
-void alertUser() {
-    display.clearDisplay();
-    display.setCursor(0, 10);
-    display.println("Take Your Medicine!");
-    display.display();
-
-    alertActive = true;
-
-    for (int i = 0; i < 10; i++) {
-        digitalWrite(BUZZER_PIN, HIGH);
-        delay(500);
-        digitalWrite(BUZZER_PIN, LOW);
-        delay(500);
-        if (digitalRead(BUTTON_PIN) == LOW) {
-            break;
+        else
+        {
+            GPIO_WriteBit(GPIOD, GPIO_Pin_6, Bit_RESET); // Turn off LED
+            TIM1_PWMOut_Init(100, 480 - 1, 10 ); // Set PWM to 10% duty cycle to deactivate the servo motor
         }
-    }
 
-    display.clearDisplay();
-    display.setCursor(0, 10);
-    display.println("Reminder Cleared!");
-    display.display();
-    delay(2000);
-}
+        Delay_Ms(1000); // Wait for 1 second before next reading
+    }
+} 
